@@ -1,18 +1,7 @@
 import argparse
 import os
-from helpers import (
-    whisper_langs,
-    wav2vec2_langs,
-    punct_model_langs,
-    filter_missing_timestamps,
-    create_config,
-    get_words_speaker_mapping,
-    get_realigned_ws_mapping_with_punctuation,
-    get_sentences_speaker_mapping,
-    get_speaker_aware_transcript,
-    write_srt,
-    cleanup,
-)
+from helpers import *
+from faster_whisper import WhisperModel
 import whisperx
 import torch
 from pydub import AudioSegment
@@ -20,7 +9,8 @@ from nemo.collections.asr.models.msdd_models import NeuralDiarizer
 from deepmultilingualpunctuation import PunctuationModel
 import re
 import logging
-
+import uuid
+unique_id = str(uuid.uuid4())
 mtypes = {"cpu": "int8", "cuda": "float16"}
 
 # Initialize parser
@@ -75,6 +65,22 @@ parser.add_argument(
     default="cuda" if torch.cuda.is_available() else "cpu",
     help="if you have a GPU use 'cuda', otherwise 'cpu'",
 )
+
+# New arguments to specify output file paths
+parser.add_argument(
+    "--txt-output",
+    dest="txt_output",
+    default=None,
+    help="Path to save the .txt output file",
+)
+
+parser.add_argument(
+    "--srt-output",
+    dest="srt_output",
+    default=None,
+    help="Path to save the .srt output file",
+)
+
 
 args = parser.parse_args()
 
@@ -152,12 +158,24 @@ else:
     for segment in whisper_results:
         for word in segment["words"]:
             word_timestamps.append({"word": word[2], "start": word[0], "end": word[1]})
+# Extracting the 'text' values
+# Modified code to store start and end timestamps along with the text
+transcription_results = []
 
+for segment in whisper_results:
+    text = segment['text']
+    start_time = segment['start']
+    end_time = segment['end']
+    transcription_results.append({'text': text, 'start': start_time, 'end': end_time})
+
+# Extracting the 'text', 'start', and 'end' values
+text_start_end_values = [(result['text'], result['start'], result['end']) for result in transcription_results]
+print(text_start_end_values)
 
 # convert audio to mono for NeMo combatibility
 sound = AudioSegment.from_file(vocal_target).set_channels(1)
 ROOT = os.getcwd()
-temp_path = os.path.join(ROOT, "temp_outputs")
+temp_path = os.path.join("../../workspace/workspace", "temp_outputs")
 os.makedirs(temp_path, exist_ok=True)
 sound.export(os.path.join(temp_path, "mono_file.wav"), format="wav")
 
@@ -188,7 +206,7 @@ if language in punct_model_langs:
 
     words_list = list(map(lambda x: x["word"], wsm))
 
-    labled_words = punct_model.predict(words_list, chunk_size=230)
+    labled_words = punct_model.predict(words_list)
 
     ending_puncts = ".?!"
     model_puncts = ".,;:!?"
@@ -216,10 +234,35 @@ else:
 wsm = get_realigned_ws_mapping_with_punctuation(wsm)
 ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
 
-with open(f"{os.path.splitext(args.audio)[0]}.txt", "w", encoding="utf-8-sig") as f:
-    get_speaker_aware_transcript(ssm, f)
 
-with open(f"{os.path.splitext(args.audio)[0]}.srt", "w", encoding="utf-8-sig") as srt:
+txt_file_path = args.txt_output 
+#with open(txt_file_path, "w", encoding="utf-8-sig") as f:
+#    get_speaker_aware_transcript(ssm, f)
+
+# Write the subtitles to a .srt file
+srt_file_path = args.srt_output 
+with open(srt_file_path, "w", encoding="utf-8-sig") as srt:
     write_srt(ssm, srt)
+    
+print(txt_file_path)
 
-cleanup(temp_path)
+import json
+
+# Path to save the JSON file
+json_file_path = os.path.splitext(srt_file_path)[0] + ".json"
+# Create a list to store the transcription results with start, end, and text
+transcription_data = []
+
+# Populate the list with transcription results
+for result in whisper_results:
+    transcription_data.append({
+        "start": result["start"],
+        "end": result["end"],
+        "text": result["text"]
+    })
+
+# Write the transcription data to the JSON file
+with open(json_file_path, "w", encoding="utf-8") as json_file:
+    json.dump(transcription_data, json_file, indent=4)
+
+print(f"JSON file saved at: {json_file_path}")
